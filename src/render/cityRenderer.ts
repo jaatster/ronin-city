@@ -26,6 +26,7 @@ interface BreakdownEntry {
   name: string;
   color: string;
   count: number;
+  linkUrl: string | null;
 }
 
 interface RenderSnapshot {
@@ -99,6 +100,15 @@ function mixHexColor(colorA: string, colorB: string, factor: number): string {
     .padStart(2, '0')}`;
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
 export class RoninCityRenderer {
   private readonly context: CanvasRenderingContext2D;
   private readonly canvas: HTMLCanvasElement;
@@ -128,11 +138,20 @@ export class RoninCityRenderer {
     this.canvas.style.cursor = this.hoveredProjectId ? 'pointer' : 'default';
   };
 
-  private readonly onPointerLeave = (): void => {
-    this.pointerActive = false;
-    this.hoveredProjectId = null;
-    this.canvas.style.cursor = 'default';
-    this.tooltip.style.opacity = '0';
+  private readonly onPointerLeave = (event: MouseEvent): void => {
+    if (this.isEventIntoTooltip(event)) {
+      return;
+    }
+
+    this.clearPointerState();
+  };
+
+  private readonly onTooltipLeave = (event: MouseEvent): void => {
+    if (this.isEventIntoCanvas(event)) {
+      return;
+    }
+
+    this.clearPointerState();
   };
 
   private readonly onPointerClick = (): void => {
@@ -145,7 +164,7 @@ export class RoninCityRenderer {
       return;
     }
 
-    const targetUrl = project.websiteUrl || project.explorerUrl;
+    const targetUrl = project.explorerUrl || project.websiteUrl;
     window.open(targetUrl, '_blank', 'noopener,noreferrer');
   };
 
@@ -168,6 +187,7 @@ export class RoninCityRenderer {
     this.canvas.addEventListener('mousemove', this.onPointerMove);
     this.canvas.addEventListener('mouseleave', this.onPointerLeave);
     this.canvas.addEventListener('click', this.onPointerClick);
+    this.tooltip.addEventListener('mouseleave', this.onTooltipLeave);
 
     this.resize();
   }
@@ -194,7 +214,9 @@ export class RoninCityRenderer {
     this.canvas.removeEventListener('mousemove', this.onPointerMove);
     this.canvas.removeEventListener('mouseleave', this.onPointerLeave);
     this.canvas.removeEventListener('click', this.onPointerClick);
+    this.tooltip.removeEventListener('mouseleave', this.onTooltipLeave);
     this.tooltip.style.opacity = '0';
+    this.tooltip.style.pointerEvents = 'none';
   }
 
   enqueueBlockBursts(activeProjectIds: string[], blockNumber: number, nowMs: number): void {
@@ -458,6 +480,7 @@ export class RoninCityRenderer {
   private updateTooltip(activities: Record<string, ProjectActivity>, blocks: TrackedBlock[]): void {
     if (!this.pointerActive || !this.hoveredProjectId) {
       this.tooltip.style.opacity = '0';
+      this.tooltip.style.pointerEvents = 'none';
       return;
     }
 
@@ -466,12 +489,14 @@ export class RoninCityRenderer {
 
     if (!project || !frame) {
       this.tooltip.style.opacity = '0';
+      this.tooltip.style.pointerEvents = 'none';
       return;
     }
 
     const activity = activities[project.id];
     if (!activity) {
       this.tooltip.style.opacity = '0';
+      this.tooltip.style.pointerEvents = 'none';
       return;
     }
 
@@ -485,7 +510,11 @@ export class RoninCityRenderer {
         : recentBreakdown
             .map((entry) => {
               const pct = recentBreakdownTotal > 0 ? ((entry.count / recentBreakdownTotal) * 100).toFixed(1) : '0';
-              return `<span style="color:${entry.color}">●</span> <strong>${entry.name}</strong>: ${entry.count.toLocaleString()} tx (${pct}%)`;
+              const projectLabel = entry.linkUrl
+                ? `<a class="tooltip-link" href="${escapeHtml(entry.linkUrl)}" target="_blank" rel="noopener noreferrer"><strong>${escapeHtml(entry.name)}</strong></a>`
+                : `<strong>${escapeHtml(entry.name)}</strong>`;
+
+              return `<span style="color:${entry.color}">●</span> ${projectLabel}: ${entry.count.toLocaleString()} tx (${pct}%)`;
             })
             .join('<br />');
 
@@ -494,7 +523,8 @@ export class RoninCityRenderer {
       const otherAddressRows = this.getRecentOtherAddressBreakdown(blocks)
         .map(([address, count]) => {
           const short = `${address.slice(0, 6)}...${address.slice(-4)}`;
-          return `&nbsp;&nbsp;<span title="${address}" style="color:#8ab8ff;font-size:0.85em">${short}</span>: ${count.toLocaleString()} tx`;
+          const addressUrl = `https://app.roninchain.com/address/${address}`;
+          return `&nbsp;&nbsp;<a class="tooltip-link" href="${escapeHtml(addressUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(address)}" style="color:#8ab8ff;font-size:0.85em">${escapeHtml(short)}</a>: ${count.toLocaleString()} tx`;
         })
         .join('<br />');
 
@@ -511,6 +541,7 @@ export class RoninCityRenderer {
     )} blocks)</span><br />${breakdownHtml}${otherAddressesHtml}`;
 
     this.tooltip.style.opacity = '1';
+    this.tooltip.style.pointerEvents = 'auto';
 
     const tooltipWidth = this.tooltip.offsetWidth || 280;
     const tooltipHeight = this.tooltip.offsetHeight || 120;
@@ -522,6 +553,24 @@ export class RoninCityRenderer {
     const y = clamp(frame.y - tooltipHeight - 8, 4, maxY);
 
     this.tooltip.style.transform = `translate(${x}px, ${y}px)`;
+  }
+
+  private clearPointerState(): void {
+    this.pointerActive = false;
+    this.hoveredProjectId = null;
+    this.canvas.style.cursor = 'default';
+    this.tooltip.style.opacity = '0';
+    this.tooltip.style.pointerEvents = 'none';
+  }
+
+  private isEventIntoTooltip(event: MouseEvent): boolean {
+    const nextTarget = event.relatedTarget;
+    return nextTarget instanceof Node && this.tooltip.contains(nextTarget);
+  }
+
+  private isEventIntoCanvas(event: MouseEvent): boolean {
+    const nextTarget = event.relatedTarget;
+    return nextTarget instanceof Node && this.canvas.contains(nextTarget);
   }
 
   private getRecentBreakdown(blocks: TrackedBlock[]): BreakdownEntry[] {
@@ -546,6 +595,7 @@ export class RoninCityRenderer {
         name: project?.name ?? projectId,
         color: project?.style.accentColor ?? '#8ab8ff',
         count,
+        linkUrl: project?.explorerUrl || project?.websiteUrl || null,
       });
     }
 

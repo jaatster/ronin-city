@@ -146,6 +146,7 @@ function setMode(mode: VisualizationMode): void {
   }
 
   tooltip.style.opacity = '0';
+  tooltip.style.pointerEvents = 'none';
   currentMode = mode;
   setRendererMode(mode);
   updateModeUi();

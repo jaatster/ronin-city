@@ -33,6 +33,7 @@ interface BreakdownEntry {
   name: string;
   color: string;
   count: number;
+  linkUrl: string | null;
 }
 
 const LANE_COUNT = 3;
@@ -67,6 +68,15 @@ function mixHexColor(colorA: string, colorB: string, factor: number): string {
     .padStart(2, '0')}`;
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
 export class RoninHighwayRenderer {
   private readonly context: CanvasRenderingContext2D;
   private readonly canvas: HTMLCanvasElement;
@@ -98,11 +108,20 @@ export class RoninHighwayRenderer {
     this.canvas.style.cursor = this.hoveredBlockNumber !== null ? 'pointer' : 'default';
   };
 
-  private readonly onPointerLeave = (): void => {
-    this.pointerActive = false;
-    this.hoveredBlockNumber = null;
-    this.canvas.style.cursor = 'default';
-    this.tooltip.style.opacity = '0';
+  private readonly onPointerLeave = (event: MouseEvent): void => {
+    if (this.isEventIntoTooltip(event)) {
+      return;
+    }
+
+    this.clearPointerState();
+  };
+
+  private readonly onTooltipLeave = (event: MouseEvent): void => {
+    if (this.isEventIntoCanvas(event)) {
+      return;
+    }
+
+    this.clearPointerState();
   };
 
   constructor(canvas: HTMLCanvasElement, tooltip: HTMLDivElement, projects: ProjectConfig[]) {
@@ -122,6 +141,7 @@ export class RoninHighwayRenderer {
 
     this.canvas.addEventListener('mousemove', this.onPointerMove);
     this.canvas.addEventListener('mouseleave', this.onPointerLeave);
+    this.tooltip.addEventListener('mouseleave', this.onTooltipLeave);
 
     this.resize();
   }
@@ -147,7 +167,9 @@ export class RoninHighwayRenderer {
   destroy(): void {
     this.canvas.removeEventListener('mousemove', this.onPointerMove);
     this.canvas.removeEventListener('mouseleave', this.onPointerLeave);
+    this.tooltip.removeEventListener('mouseleave', this.onTooltipLeave);
     this.tooltip.style.opacity = '0';
+    this.tooltip.style.pointerEvents = 'none';
   }
 
   render(snapshot: HighwayRenderSnapshot, nowMs: number): void {
@@ -474,6 +496,7 @@ export class RoninHighwayRenderer {
   private updateTooltip(): void {
     if (!this.pointerActive || this.hoveredBlockNumber === null) {
       this.tooltip.style.opacity = '0';
+      this.tooltip.style.pointerEvents = 'none';
       return;
     }
 
@@ -482,6 +505,7 @@ export class RoninHighwayRenderer {
 
     if (!block || !busFrame) {
       this.tooltip.style.opacity = '0';
+      this.tooltip.style.pointerEvents = 'none';
       return;
     }
 
@@ -491,7 +515,11 @@ export class RoninHighwayRenderer {
     let breakdownHtml = breakdown
       .map((entry) => {
         const pct = block.totalTxCount > 0 ? ((entry.count / block.totalTxCount) * 100).toFixed(1) : '0';
-        return `<span style="color:${entry.color}">●</span> <strong>${entry.name}</strong>: ${entry.count.toLocaleString()} tx (${pct}%)`;
+        const projectLabel = entry.linkUrl
+          ? `<a class="tooltip-link" href="${escapeHtml(entry.linkUrl)}" target="_blank" rel="noopener noreferrer"><strong>${escapeHtml(entry.name)}</strong></a>`
+          : `<strong>${escapeHtml(entry.name)}</strong>`;
+
+        return `<span style="color:${entry.color}">●</span> ${projectLabel}: ${entry.count.toLocaleString()} tx (${pct}%)`;
       })
       .join('<br />');
 
@@ -500,7 +528,8 @@ export class RoninHighwayRenderer {
         .sort((a, b) => b[1] - a[1])
         .map(([address, count]) => {
           const short = `${address.slice(0, 6)}...${address.slice(-4)}`;
-          return `&nbsp;&nbsp;<span title="${address}" style="color:#8ab8ff;font-size:0.85em">${short}</span>: ${count.toLocaleString()} tx`;
+          const addressUrl = `https://app.roninchain.com/address/${address}`;
+          return `&nbsp;&nbsp;<a class="tooltip-link" href="${escapeHtml(addressUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(address)}" style="color:#8ab8ff;font-size:0.85em">${escapeHtml(short)}</a>: ${count.toLocaleString()} tx`;
         })
         .join('<br />');
       breakdownHtml += `<br /><span style="color:#6a8cc7;font-size:0.85em">── Other addresses ──</span><br />${addrLines}`;
@@ -513,6 +542,7 @@ export class RoninHighwayRenderer {
     this.tooltip.innerHTML = `<strong>Block #${block.blockNumber.toLocaleString()}</strong><br />Tx: ${block.totalTxCount.toLocaleString()} &nbsp;|&nbsp; Gas: ${gasText}<br /><hr style="border:none;border-top:1px solid rgba(108,174,255,0.3);margin:4px 0" />${breakdownHtml}`;
 
     this.tooltip.style.opacity = '1';
+    this.tooltip.style.pointerEvents = 'auto';
 
     const tooltipWidth = this.tooltip.offsetWidth || 280;
     const tooltipHeight = this.tooltip.offsetHeight || 120;
@@ -524,6 +554,24 @@ export class RoninHighwayRenderer {
     const y = clamp(busFrame.y - tooltipHeight - 8, 4, maxY);
 
     this.tooltip.style.transform = `translate(${x}px, ${y}px)`;
+  }
+
+  private clearPointerState(): void {
+    this.pointerActive = false;
+    this.hoveredBlockNumber = null;
+    this.canvas.style.cursor = 'default';
+    this.tooltip.style.opacity = '0';
+    this.tooltip.style.pointerEvents = 'none';
+  }
+
+  private isEventIntoTooltip(event: MouseEvent): boolean {
+    const nextTarget = event.relatedTarget;
+    return nextTarget instanceof Node && this.tooltip.contains(nextTarget);
+  }
+
+  private isEventIntoCanvas(event: MouseEvent): boolean {
+    const nextTarget = event.relatedTarget;
+    return nextTarget instanceof Node && this.canvas.contains(nextTarget);
   }
 
   private hitTest(x: number, y: number): number | null {
@@ -552,6 +600,7 @@ export class RoninHighwayRenderer {
         count,
         name: project?.name ?? projectId,
         color: project?.style.accentColor ?? '#8ab8ff',
+        linkUrl: project?.explorerUrl || project?.websiteUrl || null,
       });
     }
 
